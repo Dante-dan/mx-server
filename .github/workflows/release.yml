@@ -71,6 +71,7 @@ jobs:
           release_name: ${{ github.ref_name }}
           draft: false
           prerelease: ${{ contains(fromJSON('["alpha", "beta"]'), github.ref_name) }}
+          allowUpdates: true
       - run: npx changelogithub
         continue-on-error: true
         env:
