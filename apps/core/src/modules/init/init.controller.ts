@@ -1,28 +1,16 @@
-import { FastifyRequest } from 'fastify'
-
-import {
-  BadRequestException,
-  Body,
-  ForbiddenException,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Req,
-  UnprocessableEntityException,
-  UseGuards,
-} from '@nestjs/common'
+import { Body, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common'
+import type { FastifyRequest } from 'fastify'
 
 import { ApiController } from '~/common/decorators/api-controller.decorator'
-import { BizException } from '~/common/exceptions/biz.exception'
-import { ErrorCodeEnum } from '~/constants/error-code.constant'
+import { AppErrorCode, createAppException } from '~/common/errors'
 import { UploadService } from '~/processors/helper/helper.upload.service'
 import { isZipMinetype } from '~/utils/mine.util'
 
 import { BackupService } from '../backup/backup.service'
 import { ConfigsService } from '../configs/configs.service'
-import { ConfigKeyDto } from '../option/dtoes/config.dto'
+import { ConfigKeyDto } from '../option/option.schema'
 import { InitGuard } from './init.guard'
+import { InitOwnerCreateDto } from './init.schema'
 import { InitService } from './init.service'
 
 @ApiController('/init')
@@ -30,12 +18,19 @@ import { InitService } from './init.service'
 export class InitController {
   constructor(
     private readonly configs: ConfigsService,
-
     private readonly initService: InitService,
-
     private readonly backupService: BackupService,
     private readonly uploadService: UploadService,
   ) {}
+
+  private async assertNotInitialized(forbiddenMode = false) {
+    if (await this.initService.isInit()) {
+      if (forbiddenMode) {
+        throw createAppException(AppErrorCode.INIT_FORBIDDEN)
+      }
+      throw createAppException(AppErrorCode.INIT_ALREADY_COMPLETED)
+    }
+  }
 
   @Get('/')
   async isInit() {
@@ -46,10 +41,7 @@ export class InitController {
 
   @Get('/configs/default')
   async getDefaultConfig() {
-    const { isInit } = await this.isInit()
-    if (isInit) {
-      throw new ForbiddenException('默认设置在完成注册之后不可见')
-    }
+    await this.assertNotInitialized(true)
     return this.configs.defaultConfig
   }
 
@@ -58,24 +50,30 @@ export class InitController {
     @Param() params: ConfigKeyDto,
     @Body() body: Record<string, any>,
   ) {
-    const { isInit } = await this.isInit()
-    if (isInit) {
-      throw new BadRequestException('已经完成初始化，请登录后进行设置')
-    }
+    await this.assertNotInitialized()
     if (typeof body !== 'object') {
-      throw new UnprocessableEntityException('body must be object')
+      throw createAppException(AppErrorCode.INIT_INVALID_BODY)
     }
     return this.configs.patchAndValid(params.key, body)
   }
 
+  @Post('/owner')
+  async createOwner(@Body() body: InitOwnerCreateDto) {
+    await this.assertNotInitialized()
+    return this.initService.createOwner(body)
+  }
+
   @Post('/restore')
   async uploadAndRestore(@Req() req: FastifyRequest) {
+    await this.assertNotInitialized()
     const data = await this.uploadService.getAndValidMultipartField(req, {
       maxFileSize: 1024 * 1024 * 100,
     })
     const { mimetype } = data
     if (!isZipMinetype(mimetype)) {
-      throw new BizException(ErrorCodeEnum.MineZip, `got: ${mimetype}`)
+      throw createAppException(AppErrorCode.INIT_INVALID_MIME_TYPE, {
+        got: mimetype,
+      })
     }
 
     await this.backupService.saveTempBackupByUpload(await data.toBuffer())

@@ -1,18 +1,9 @@
-import { debounce, uniqBy } from 'lodash'
-import SocketIO from 'socket.io'
+import { Logger } from '@nestjs/common'
 import type {
   GatewayMetadata,
   OnGatewayConnection,
   OnGatewayDisconnect,
 } from '@nestjs/websockets'
-import type { BroadcastOperator, Emitter } from '@socket.io/redis-emitter'
-import type {
-  DecorateAcknowledgementsWithMultipleResponses,
-  DefaultEventsMap,
-} from 'socket.io/dist/typed-events'
-import type { SocketType } from '../gateway.service'
-import type { EventGatewayHooks } from './hook.interface'
-
 import {
   ConnectedSocket,
   MessageBody,
@@ -20,21 +11,30 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets'
+import type { BroadcastOperator, Emitter } from '@socket.io/redis-emitter'
+import { debounce, uniqBy } from 'es-toolkit/compat'
+import type SocketIO from 'socket.io'
+import { DefaultEventsMap } from 'socket.io'
 
 import { BusinessEvents } from '~/constants/business-event.constant'
 import { RedisKeys } from '~/constants/cache.constant'
-import { CacheService } from '~/processors/redis/cache.service'
+import { AuthService } from '~/modules/auth/auth.service'
+import { RedisService } from '~/processors/redis/redis.service'
 import { getRedisKey } from '~/utils/redis.util'
 import { scheduleManager } from '~/utils/schedule.util'
 import { getShortDate } from '~/utils/time.util'
 
 import { BroadcastBaseGateway } from '../base.gateway'
+import type { SocketType } from '../gateway.service'
 import { GatewayService } from '../gateway.service'
-import { MessageEventDto, SupportedMessageEvent } from './dtos/message'
+import { MessageEventDto, SupportedMessageEvent } from './dtos/message.schema'
+import type { EventGatewayHooks } from './hook.interface'
 
 declare module '~/types/socket-meta' {
   interface SocketMetadata {
     sessionId: string
+    lang?: string
+    readerId?: string
 
     roomJoinedAtMap: Record<string, number>
   }
@@ -45,15 +45,25 @@ const namespace = 'web'
 // @UseGuards(WsExtendThrottlerGuard)
 @WebSocketGateway<GatewayMetadata>({
   namespace,
+  cors: {
+    origin: (origin, cb) => cb(null, origin || true),
+    credentials: true,
+  },
 })
 export class WebEventsGateway
   extends BroadcastBaseGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {
+  private readonly logger = new Logger(WebEventsGateway.name)
+  private readonly socketFetchSoftTimeoutMs = 800
+  private lastSocketFetchWarnAt = 0
+
   constructor(
-    private readonly cacheService: CacheService,
+    private readonly redisService: RedisService,
 
     private readonly gatewayService: GatewayService,
+
+    private readonly authService: AuthService,
   ) {
     super()
   }
@@ -90,25 +100,30 @@ export class WebEventsGateway
   }
 
   async getCurrentClientCount() {
+    if (!this.namespace?.server) {
+      return 0
+    }
     const server = this.namespace.server
 
-    const socketsMeta = await Promise.all(
-      await server
-        .of(`/${namespace}`)
-        .fetchSockets()
-        .then((sockets) => {
+    try {
+      const socketsMeta = await Promise.all(
+        await this.fetchSocketsWithSoftTimeout(
+          () => server.of(`/${namespace}`).fetchSockets(),
+          'getCurrentClientCount',
+        ).then((sockets) => {
           return sockets.map((socket) =>
             this.gatewayService.getSocketMetadata(socket),
           )
         }),
-    )
-    // // 这里用 web socket id 作为同一用户，一般 web 用 userId 或者 local storage sessionId 作为 socket session id
-    // return uniqBy(socketsMeta, async (x) => {
-    //   const meta = await this.gatewayService.getSocketMetadata(x)
-    //   console.log(meta, 'meta', x.id, 'x.id')
-    //   return meta?.sessionId || true
-    // }).length
-    return uniqBy(socketsMeta, (x) => x?.sessionId).length
+      )
+      return uniqBy(socketsMeta, (x) => x?.sessionId).length
+    } catch (error) {
+      this.warnSocketFetchFailure(
+        'fetchSockets failed in getCurrentClientCount, fallback to local sockets count',
+        error,
+      )
+      return this.namespace?.sockets?.size ?? 0
+    }
   }
 
   @SubscribeMessage('message')
@@ -125,6 +140,7 @@ export class WebEventsGateway
         const { roomName } = payload as { roomName: string }
         if (roomName) {
           socket.join(roomName)
+          this.logger.log(`Socket ${socket.id} joined room [${roomName}]`)
           this.hooks.onJoinRoom.forEach((fn) => fn(socket, roomName))
 
           const roomJoinedAtMap = await this.getSocketRoomJoinedAtMap(socket)
@@ -157,6 +173,18 @@ export class WebEventsGateway
           await this.gatewayService.setSocketMetadata(socket, { sessionId })
           this.whenUserOnline()
         }
+        break
+      }
+      case SupportedMessageEvent.UpdateLang: {
+        const { lang } = payload as { lang: string }
+        if (
+          lang &&
+          typeof lang === 'string' &&
+          /^[a-z]{2}(?:-[A-Za-z]{2,})?$/.test(lang)
+        ) {
+          await this.updateSocketLang(socket, lang)
+        }
+        break
       }
     }
 
@@ -170,15 +198,71 @@ export class WebEventsGateway
       // fallback sid
       socket.id
 
-    // logger.debug('webSessionId', webSessionId)
+    const rawLang = socket.handshake.query.lang as string | undefined
+    const lang =
+      rawLang && /^[a-z]{2}(?:-[A-Za-z]{2,})?$/.test(rawLang)
+        ? rawLang
+        : undefined
+
+    const readerId = await this.resolveReaderIdFromHandshake(socket)
 
     await this.gatewayService.setSocketMetadata(socket, {
       sessionId: webSessionId,
+      ...(lang ? { lang } : {}),
+      ...(readerId ? { readerId } : {}),
     })
+
+    if (lang) {
+      socket.join(`lang:${lang}`)
+    }
 
     this.whenUserOnline()
     super.handleConnect(socket)
     this.hooks.onConnected.forEach((fn) => fn(socket))
+
+    // Send current online count directly to the connecting socket,
+    // bypassing Redis emitter to ensure delivery
+    this.sendOnlineNumber()
+      .then((data) => {
+        socket.emit(
+          'message',
+          this.gatewayMessageFormat(BusinessEvents.VISITOR_ONLINE, data),
+        )
+      })
+      .catch(() => {})
+  }
+
+  private async resolveReaderIdFromHandshake(
+    socket: SocketIO.Socket,
+  ): Promise<string | undefined> {
+    const cookie = socket.handshake.headers.cookie as string | undefined
+    if (!cookie) return undefined
+    const origin = socket.handshake.headers.origin as string | undefined
+    try {
+      const headers = new Headers()
+      headers.set('cookie', cookie)
+      if (origin) headers.set('origin', origin)
+      const session = await this.authService.getSessionUserFromHeaders(headers)
+      const id = session?.user?.id
+      return typeof id === 'string' ? id : undefined
+    } catch (error) {
+      this.logger.debug(
+        `resolveReaderIdFromHandshake failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+      return undefined
+    }
+  }
+
+  private async updateSocketLang(socket: SocketIO.Socket, lang: string) {
+    const meta = await this.gatewayService.getSocketMetadata(socket)
+    const prevLang = meta?.lang
+    if (prevLang) {
+      socket.leave(`lang:${prevLang}`)
+    }
+    socket.join(`lang:${lang}`)
+    await this.gatewayService.setSocketMetadata(socket, { lang })
   }
 
   whenUserOnline = debounce(
@@ -189,7 +273,7 @@ export class WebEventsGateway
       )
 
       scheduleManager.schedule(async () => {
-        const redisClient = this.cacheService.getClient()
+        const redisClient = this.redisService.getClient()
         const dateFormat = getShortDate(new Date())
 
         // get and store max_online_count
@@ -239,7 +323,7 @@ export class WebEventsGateway
       exclude?: string[]
     },
   ) {
-    const emitter = this.cacheService.emitter
+    const emitter = this.redisService.emitter
 
     let socket = emitter.of(`/${namespace}`) as
       | Emitter<DefaultEventsMap>
@@ -248,7 +332,10 @@ export class WebEventsGateway
     const exclude = options?.exclude
 
     if (rooms && rooms.length > 0) {
+      this.logger.log(`broadcast [${event}] to rooms [${rooms.join(',')}]`)
       socket = socket.in(rooms)
+    } else {
+      this.logger.log(`broadcast [${event}] to all`)
     }
     if (exclude && exclude.length > 0) {
       socket = socket.except(exclude)
@@ -256,23 +343,56 @@ export class WebEventsGateway
     socket.emit('message', this.gatewayMessageFormat(event, data))
   }
 
-  public getSocketsOfRoom(
+  public async getSocketsOfRoom(
     roomName: string,
-  ): Promise<
-    | SocketIO.Socket[]
-    | SocketIO.RemoteSocket<
-        DecorateAcknowledgementsWithMultipleResponses<DefaultEventsMap>,
-        any
-      >[]
-  > {
-    return this.namespace.in(roomName).fetchSockets()
+  ): Promise<SocketIO.Socket[] | SocketIO.RemoteSocket<any, any>[]> {
+    try {
+      return await this.fetchSocketsWithSoftTimeout(
+        () => this.namespace.in(roomName).fetchSockets(),
+        `getSocketsOfRoom(${roomName})`,
+      )
+    } catch (error) {
+      this.warnSocketFetchFailure(
+        `fetchSockets failed for room [${roomName}], fallback to local room sockets`,
+        error,
+      )
+      try {
+        return await this.namespace.in(roomName).local.fetchSockets()
+      } catch (fallbackError) {
+        this.warnSocketFetchFailure(
+          `local fetchSockets failed for room [${roomName}], returning empty`,
+          fallbackError,
+        )
+        return []
+      }
+    }
   }
 
   // private isValidBizRoomName(roomName: string) {
   //   return roomName.split('-').length === 2
   // }
   public async getAllRooms() {
-    const sockets = await this.namespace.fetchSockets()
+    let sockets: Awaited<ReturnType<typeof this.namespace.fetchSockets>>
+    try {
+      sockets = await this.fetchSocketsWithSoftTimeout(
+        () => this.namespace.fetchSockets(),
+        'getAllRooms',
+      )
+    } catch (error) {
+      this.warnSocketFetchFailure(
+        'fetchSockets failed in getAllRooms, fallback to local sockets',
+        error,
+      )
+      try {
+        sockets = await this.namespace.local.fetchSockets()
+      } catch (fallbackError) {
+        this.warnSocketFetchFailure(
+          'local fetchSockets failed in getAllRooms, returning empty',
+          fallbackError,
+        )
+        return {}
+      }
+    }
     const roomToSocketsMap = {} as Record<string, (typeof sockets)[number][]>
     for (const socket of sockets) {
       socket.rooms.forEach((roomName) => {
@@ -293,5 +413,42 @@ export class WebEventsGateway
       {}
 
     return roomJoinedAtMap
+  }
+
+  private async fetchSocketsWithSoftTimeout<T>(
+    fetcher: () => Promise<T>,
+    context: string,
+  ): Promise<T> {
+    let timer: NodeJS.Timeout | undefined
+
+    try {
+      return await Promise.race([
+        fetcher(),
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new Error(
+                `fetchSockets soft timeout (${this.socketFetchSoftTimeoutMs}ms) in ${context}`,
+              ),
+            )
+          }, this.socketFetchSoftTimeoutMs)
+        }),
+      ])
+    } finally {
+      if (timer) {
+        clearTimeout(timer)
+      }
+    }
+  }
+
+  private warnSocketFetchFailure(message: string, error: unknown) {
+    const now = Date.now()
+    if (now - this.lastSocketFetchWarnAt < 10_000) {
+      return
+    }
+    this.lastSocketFetchWarnAt = now
+
+    const reason = error instanceof Error ? error.message : String(error)
+    this.logger.warn(`${message}. reason=${reason}`)
   }
 }

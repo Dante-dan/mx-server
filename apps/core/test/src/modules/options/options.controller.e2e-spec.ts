@@ -2,6 +2,7 @@ import { createE2EApp } from 'test/helper/create-e2e-app'
 import { authPassHeader } from 'test/mock/guard/auth.guard'
 import { configProvider } from 'test/mock/modules/config.mock'
 
+import { apiRoutePrefix } from '~/common/decorators/api-controller.decorator'
 import { BaseOptionController } from '~/modules/option/controllers/base.option.controller'
 
 describe('OptionController (e2e)', () => {
@@ -9,11 +10,11 @@ describe('OptionController (e2e)', () => {
     controllers: [BaseOptionController],
     providers: [configProvider],
   })
-  test('GET /config/jsonschema', () => {
+  test('GET /config/form-schema', () => {
     return proxy.app
       .inject({
         method: 'GET',
-        url: '/config/jsonschema',
+        url: `${apiRoutePrefix}/config/form-schema`,
         headers: {
           ...authPassHeader,
         },
@@ -23,9 +24,11 @@ describe('OptionController (e2e)', () => {
         const json = res.json()
 
         expect(
-          typeof json.properties === 'object' && json.properties,
+          typeof json.data.groups === 'object' && json.data.groups,
         ).toBeTruthy()
-        expect(typeof json.default === 'object' && json.default).toBeTruthy()
+        expect(
+          typeof json.data.defaults === 'object' && json.data.defaults,
+        ).toBeTruthy()
       })
   })
 })

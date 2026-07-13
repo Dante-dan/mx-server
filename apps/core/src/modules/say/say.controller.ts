@@ -1,18 +1,95 @@
-import { sample } from 'lodash'
+import {
+  Body,
+  Delete,
+  Get,
+  Inject,
+  Param,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common'
+import { sample } from 'es-toolkit/compat'
+import { createZodDto } from 'nestjs-zod'
+import { z } from 'zod'
 
-import { Get } from '@nestjs/common'
+import { ApiController } from '~/common/decorators/api-controller.decorator'
+import { Auth } from '~/common/decorators/auth.decorator'
+import { AppErrorCode, createAppException } from '~/common/errors'
+import { withMeta } from '~/common/response/envelope.types'
+import { MetaObjectBuilder } from '~/common/response/meta-builder'
+import { EntityIdDto } from '~/shared/dto/id.dto'
+import { BasicPagerDto } from '~/shared/dto/pager.dto'
 
-import { BaseCrudFactory } from '~/transformers/crud-factor.transformer'
+import { SayRepository } from './say.repository'
 
-import { SayModel } from './say.model'
+const SayCreateSchema = z.object({
+  text: z.string().min(1),
+  source: z.string().nullable().optional(),
+  author: z.string().nullable().optional(),
+})
 
-export class SayController extends BaseCrudFactory({ model: SayModel }) {
+class SayCreateBodyDto extends createZodDto(SayCreateSchema) {}
+class SayPatchBodyDto extends createZodDto(SayCreateSchema.partial()) {}
+
+@ApiController('says')
+export class SayController {
+  constructor(
+    @Inject(SayRepository) private readonly repository: SayRepository,
+  ) {}
+
+  @Get('/')
+  async gets(@Query() pager: BasicPagerDto) {
+    const size = pager.size ?? 10
+    const page = pager.page ?? 1
+    const result = await this.repository.list(page, size)
+    return withMeta(
+      result.data,
+      new MetaObjectBuilder().pagination(result.pagination).build(),
+    )
+  }
+
   @Get('/random')
   async getRandomOne() {
-    const res = await this.model.find({}).lean()
-    if (res.length === 0) {
-      return { data: null }
+    const rows = await this.repository.findAll()
+    return rows.length === 0 ? null : sample(rows)
+  }
+
+  @Get('/all')
+  async getAll() {
+    return this.repository.findAll()
+  }
+
+  @Get('/:id')
+  async getOne(@Param() { id }: EntityIdDto) {
+    const row = await this.repository.findById(id)
+    if (!row) {
+      throw createAppException(AppErrorCode.NOT_FOUND, { id })
     }
-    return { data: sample(res) }
+    return row
+  }
+
+  @Post('/')
+  @Auth()
+  async create(@Body() body: SayCreateBodyDto) {
+    return this.repository.create(body)
+  }
+
+  @Put('/:id')
+  @Auth()
+  async update(@Param() { id }: EntityIdDto, @Body() body: SayPatchBodyDto) {
+    const row = await this.repository.update(id, body)
+    if (!row) {
+      throw createAppException(AppErrorCode.NOT_FOUND, { id })
+    }
+    return row
+  }
+
+  @Delete('/:id')
+  @Auth()
+  async remove(@Param() { id }: EntityIdDto) {
+    const row = await this.repository.deleteById(id)
+    if (!row) {
+      throw createAppException(AppErrorCode.NOT_FOUND, { id })
+    }
   }
 }

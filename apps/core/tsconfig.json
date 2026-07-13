@@ -1,17 +1,19 @@
 {
   "compilerOptions": {
     "incremental": true,
-    "target": "es2020",
+    "strict": false,
+    "target": "esnext",
     "lib": [
-      "ES2021",
-      "es2020",
+      "ESNext",
       "DOM",
-      "DOM.Iterable"
+      "DOM.Iterable",
+      "ES2022",
+      "ES2021"
     ],
     "emitDecoratorMetadata": true,
+    "moduleResolution": "bundler",
     "experimentalDecorators": true,
-    "baseUrl": ".",
-    "module": "CommonJS",
+    "module": "esnext",
     "paths": {
       "~": [
         "./src"
@@ -24,8 +26,9 @@
     "allowJs": true,
     "strictNullChecks": true,
     "noImplicitAny": false,
-    "declaration": true,
-    "outDir": "./dist",
+    "declaration": false,
+    "disableSizeLimit": true,
+    "noEmit": true,
     "removeComments": true,
     "sourceMap": true,
     "allowSyntheticDefaultImports": true,
@@ -39,6 +42,7 @@
   "exclude": [
     "dist",
     "tmp",
-    "assets/types/type.declare.ts"
+    "assets/types/type.declare.ts",
+    "src/utils/sandbox/sandbox-type-declaration.runtime.d.ts"
   ]
 }

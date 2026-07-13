@@ -8,11 +8,12 @@ import type {
   RecentActivities,
   RoomsData,
 } from '~/models/activity'
+import { autoBind } from '~/utils/auto-bind'
+import { camelcaseKeys } from '~/utils/camelcase-keys'
+
 import type { HTTPClient } from '../core'
 
-import { autoBind } from '~/utils/auto-bind'
-
-declare module '../core/client' {
+declare module '@mx-space/api-client' {
   interface HTTPClient<
     T extends IRequestAdapter = IRequestAdapter,
     ResponseWrapper = unknown,
@@ -51,11 +52,32 @@ export class ActivityController<ResponseWrapper> implements IController {
    */
   getPresence(roomName: string) {
     return this.proxy.presence.get<{
-      data: Record<string, ActivityPresence>
+      presence: Record<string, ActivityPresence>
       readers: Record<string, AuthUser>
     }>({
       params: {
         room_name: roomName,
+      },
+      transformResponse: <T>(data: any): T => {
+        const payload = data as {
+          presence?: Record<string, unknown>
+          readers?: Record<string, unknown>
+        }
+
+        return {
+          presence: Object.fromEntries(
+            Object.entries(payload.presence ?? {}).map(([identity, value]) => [
+              identity,
+              camelcaseKeys<ActivityPresence>(value),
+            ]),
+          ),
+          readers: Object.fromEntries(
+            Object.entries(payload.readers ?? {}).map(([id, value]) => [
+              id,
+              camelcaseKeys<AuthUser>(value),
+            ]),
+          ),
+        } as T
       },
     })
   }

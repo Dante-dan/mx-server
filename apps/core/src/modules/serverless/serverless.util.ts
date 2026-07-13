@@ -1,23 +1,10 @@
-/* eslint-disable import/no-duplicates */
-import type { TransformOptions } from '@babel/core'
+import type { InputOptions, NodePath } from '@babel/core'
+import BabelPluginTransformCommonJS from '@babel/plugin-transform-modules-commonjs'
+import BabelPluginTransformTS from '@babel/plugin-transform-typescript'
 import type * as t from '@babel/types'
 import type { VariableDeclaration } from '@babel/types'
 
-import BabelPluginTransformCommonJS from '@babel/plugin-transform-modules-commonjs'
-import BabelPluginTransformTS from '@babel/plugin-transform-typescript'
-
-export const hashStable = (str: string): string => {
-  let hash = 5381
-  let i = str.length
-
-  while (i) {
-    hash = (hash * 33) ^ str.charCodeAt(--i)
-  }
-
-  return (hash >>> 0).toString(36)
-}
-
-export const complieTypeScriptBabelOptions: TransformOptions = {
+export const complieTypeScriptBabelOptions: InputOptions = {
   comments: false,
   plugins: [
     BabelPluginTransformTS,
@@ -28,7 +15,7 @@ export const complieTypeScriptBabelOptions: TransformOptions = {
     function transformImport() {
       return {
         visitor: {
-          VariableDeclaration(path: babel.NodePath) {
+          VariableDeclaration(path: NodePath) {
             const node = path.node as VariableDeclaration
             if (
               node.kind === 'var' &&

@@ -1,20 +1,20 @@
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import JSZip from 'jszip'
-import { omit } from 'lodash'
-import type { CategoryModel } from '../category/category.model'
-import type { MarkdownYAMLProperty } from './markdown.interface'
 
 import { CacheTTL } from '@nestjs/cache-manager'
 import { Body, Get, Header, Param, Post, Query } from '@nestjs/common'
+import { omit } from 'es-toolkit/compat'
+import JSZip from 'jszip'
 
 import { ApiController } from '~/common/decorators/api-controller.decorator'
 import { Auth } from '~/common/decorators/auth.decorator'
 import { HTTPDecorators } from '~/common/decorators/http.decorator'
 import { ArticleTypeEnum } from '~/constants/article.constant'
-import { MongoIdDto } from '~/shared/dto/id.dto'
+import { EntityIdDto } from '~/shared/dto/id.dto'
 
-import { DataListDto, ExportMarkdownQueryDto } from './markdown.dto'
+import type { CategoryModel } from '../category/category.types'
+import type { MarkdownYAMLProperty } from './markdown.interface'
+import { DataListDto, ExportMarkdownQueryDto } from './markdown.schema'
 import { MarkdownService } from './markdown.service'
 
 @ApiController('markdown')
@@ -24,9 +24,7 @@ export class MarkdownController {
   @Post('/import')
   @Auth()
   async importArticle(@Body() body: DataListDto) {
-    const type = body.type
-
-    switch (type) {
+    switch (body.type) {
       case ArticleTypeEnum.Post: {
         return await this.service.insertPostsToDb(body.data)
       }
@@ -38,31 +36,31 @@ export class MarkdownController {
 
   @Get('/export')
   @Auth()
-  @HTTPDecorators.Bypass
+  @HTTPDecorators.RawResponse
   @Header('Content-Type', 'application/zip')
   async exportArticleToMarkdown(@Query() query: ExportMarkdownQueryDto) {
-    const { show_title: showTitle, slug, yaml, with_meta_json } = query
+    const { showTitle, slug, yaml, withMetaJson } = query
     const allArticles = await this.service.extractAllArticle()
     const { notes, pages, posts } = allArticles
 
     const convertor = <
       T extends {
         text: string
-        created?: Date
-        modified?: Date | null
+        createdAt?: Date
+        modifiedAt?: Date | null
         title: string
         id: string
-        slug?: string
+        slug?: string | null
       },
     >(
       item: T,
       extraMetaData: Record<string, any> = {},
     ): MarkdownYAMLProperty => {
       const meta = {
-        created: item.created!,
-        modified: item.modified,
+        createdAt: item.createdAt!,
+        modifiedAt: item.modifiedAt ?? null,
         title: item.title,
-        slug: item.slug || item.title,
+        slug: item.slug ?? item.title,
         oid: item.id,
         ...extraMetaData,
       }
@@ -79,8 +77,9 @@ export class MarkdownController {
     const convertPost = posts.map((post) =>
       convertor(post!, {
         categories: (post.category as CategoryModel).name,
+        tags: post.tags,
         type: 'post',
-        permalink: `/posts/${(post.category as CategoryModel).name}/${post.slug}`,
+        permalink: `/posts/${(post.category as CategoryModel).slug}/${post.slug}`,
       }),
     )
     const convertNote = notes.map((note) =>
@@ -108,8 +107,7 @@ export class MarkdownController {
       notes: convertNote,
     }
 
-    const id2DataMap = {} as Record<string, any>
-
+    const id2DataMap: Record<string, any> = {}
     for (const item of [...posts, ...notes, ...pages]) {
       id2DataMap[item.id] = item
     }
@@ -129,7 +127,7 @@ export class MarkdownController {
           rtzip.file(join(key, relativePath), file.nodeStream())
         })
 
-        if (with_meta_json) {
+        if (withMetaJson) {
           rtzip.file(
             `${key}/_meta.json`,
             JSON.stringify(
@@ -137,7 +135,7 @@ export class MarkdownController {
               arr.reduce((acc, cur: any) => {
                 return {
                   ...acc,
-                  [cur.meta.oid]: omit(id2DataMap[cur.meta.oid], 'text', '__v'),
+                  [cur.meta.oid]: omit(id2DataMap[cur.meta.oid], 'text'),
                 }
               }, {}),
             ),
@@ -155,7 +153,7 @@ export class MarkdownController {
 
   @Get('/render/structure/:id')
   @CacheTTL(60 * 60)
-  async getRenderedMarkdownHtmlStructure(@Param() params: MongoIdDto) {
+  async getRenderedMarkdownHtmlStructure(@Param() params: EntityIdDto) {
     const { id } = params
     const { html, document } = await this.service.renderArticle(id)
 

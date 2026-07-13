@@ -1,6 +1,24 @@
 export const DEFAULT_SUMMARY_LANG = 'zh'
 
-export const LANGUAGE_CODE_TO_NAME = {
+/** Redis lock TTL for AI streaming tasks (in seconds) */
+export const AI_STREAM_LOCK_TTL = 60
+/** Redis TTL for AI streaming results (in seconds) */
+export const AI_STREAM_RESULT_TTL = 10 * 60
+/** Max Redis Stream length for AI streaming */
+export const AI_STREAM_MAXLEN = 2000
+/** Redis Stream block time (ms) */
+// 200ms balances smooth SSE animation and Redis load in dev
+export const AI_STREAM_READ_BLOCK_MS = 200
+/** Idle timeout for AI streaming follower (ms) */
+export const AI_STREAM_IDLE_TIMEOUT_MS = 120_000
+
+/** Maximum word count for AI-generated summaries */
+export const AI_SUMMARY_MAX_WORDS = 150
+
+/** Maximum character length for fallback slug generation */
+export const AI_FALLBACK_SLUG_MAX_LENGTH = 50
+
+export const LANGUAGE_CODE_TO_NAME: Record<string, string> = {
   ar: 'Arabic',
   bg: 'Bulgarian',
   cs: 'Czech',
@@ -44,28 +62,3 @@ export const LANGUAGE_CODE_TO_NAME = {
   vi: 'Vietnamese',
   zh: 'Chinese',
 }
-
-export const OpenAiSupportedModels = [
-  { label: 'gpt-4-turbo', value: 'gpt-4-turbo' },
-  { label: 'gpt-4-turbo-2024-04-09', value: 'gpt-4-turbo-2024-04-09' },
-  { label: 'gpt-4-0125-preview', value: 'gpt-4-0125-preview' },
-  { label: 'gpt-4-turbo-preview', value: 'gpt-4-turbo-preview' },
-  { label: 'gpt-4-1106-preview', value: 'gpt-4-1106-preview' },
-  { label: 'gpt-4-vision-preview', value: 'gpt-4-vision-preview' },
-  { label: 'gpt-4', value: 'gpt-4' },
-  { label: 'gpt-4-0314', value: 'gpt-4-0314' },
-  { label: 'gpt-4-0613', value: 'gpt-4-0613' },
-  { label: 'gpt-4-32k', value: 'gpt-4-32k' },
-  { label: 'gpt-4-32k-0314', value: 'gpt-4-32k-0314' },
-  { label: 'gpt-4-32k-0613', value: 'gpt-4-32k-0613' },
-  { label: 'gpt-3.5-turbo', value: 'gpt-3.5-turbo' },
-  { label: 'gpt-3.5-turbo-16k', value: 'gpt-3.5-turbo-16k' },
-  { label: 'gpt-3.5-turbo-0301', value: 'gpt-3.5-turbo-0301' },
-  { label: 'gpt-3.5-turbo-0613', value: 'gpt-3.5-turbo-0613' },
-  { label: 'gpt-3.5-turbo-1106', value: 'gpt-3.5-turbo-1106' },
-  { label: 'gpt-3.5-turbo-0125', value: 'gpt-3.5-turbo-0125' },
-  { label: 'gpt-3.5-turbo-16k-0613', value: 'gpt-3.5-turbo-16k-0613' },
-  { label: 'gpt-4o', value: 'gpt-4o' },
-  { label: 'gpt-4o-2024-05-13', value: 'gpt-4o-2024-05-13' },
-  { label: 'gpt-4o-mini', value: 'gpt-4o-mini' },
-]

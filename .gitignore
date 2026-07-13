@@ -1,6 +1,7 @@
 # compiled output
 /dist
 node_modules
+.pnpm-store/
 
 # Logs
 logs
@@ -18,7 +19,7 @@ lerna-debug.log*
 /.nyc_output
 
 # IDEs and editors
-/.idea
+.idea/
 .project
 .classpath
 .c9/
@@ -40,8 +41,10 @@ release.zip
 
 run
 
-data
-assets
+# anchored to repo root: these are the server's runtime dirs, not nested
+# source dirs of the same name (e.g. apps/admin/src/ui/data, .../assets)
+/data
+/assets
 .env
 
 scripts/workflow/docker-compose.yml
@@ -53,3 +56,13 @@ dist
 dev/
 
 .history/
+.eslintcache
+.superpowers
+.claude/scheduled_tasks.lock
+
+# local docker smoke overrides — never commit
+docker-compose.smoke.yml
+
+.pnpm-store/
+.worktrees/
+.superpowers/

@@ -10,7 +10,7 @@ export abstract class BaseGateway {
   ) {
     return {
       type,
-      data: JSON.parse(JSON.stringify(message)),
+      data: structuredClone(message),
       code,
     }
   }
@@ -19,7 +19,7 @@ export abstract class BaseGateway {
     client.send(
       this.gatewayMessageFormat(
         BusinessEvents.GATEWAY_CONNECT,
-        'WebSocket 断开',
+        'WebSocket disconnected',
       ),
     )
   }
@@ -27,13 +27,16 @@ export abstract class BaseGateway {
     client.send(
       this.gatewayMessageFormat(
         BusinessEvents.GATEWAY_CONNECT,
-        'WebSocket 已连接',
+        'WebSocket connected',
       ),
     )
   }
 
-  // eslint-disable-next-line unused-imports/no-unused-vars
-  broadcast(event: BusinessEvents, data: any) {}
+  abstract broadcast(
+    event: BusinessEvents,
+    data: any,
+    options?: { rooms?: string[]; exclude?: string[] },
+  ): void
 }
 
 export abstract class BroadcastBaseGateway extends BaseGateway {}

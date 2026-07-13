@@ -1,12 +1,17 @@
-import type { ExecutionContext } from '@nestjs/common'
-import type { UserModel } from '~/modules/user/user.model'
-import type { FastifyRequest } from 'fastify'
 import type { IncomingMessage } from 'node:http'
 
+import type { ExecutionContext } from '@nestjs/common'
+import type { FastifyRequest } from 'fastify'
+
+import type { SessionUser } from '~/modules/auth/auth.types'
+
 type BizRequest = {
-  user?: UserModel
+  user?: SessionUser
   isGuest: boolean
 
+  authProvider?: string
+  hasAdminAccess?: boolean
+  hasReaderIdentity?: boolean
   isAuthenticated: boolean
   token?: string
   readerId?: string

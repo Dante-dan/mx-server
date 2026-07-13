@@ -2,180 +2,234 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
-name: Release (core)
+name: Release
+
+permissions: write-all
+
+env:
+  IMAGE: ghcr.io/dante-dan/mx-server
+  REDISMS_DISABLE_POSTINSTALL: 1
+  MONGOMS_DISABLE_POSTINSTALL: 1
 
 jobs:
-  build:
-    name: Main Build
-    runs-on: ubuntu-24.04
-    outputs:
-      release_url: ${{ steps.create_release.outputs.upload_url }}
+  quality:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20.x
+          fetch-tags: true
 
-      - name: Start MongoDB
-        uses: supercharge/mongodb-github-action@1.11.0
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node
         with:
-          mongodb-version: 4.4
-      - name: Start Redis
-        uses: supercharge/redis-github-action@1.8.0
-        with:
-          redis-version: 6
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4.0.0
-        with:
-          version:
-          run_install: false
+          node-version: '22.x'
 
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+      - name: Run Lint
+        run: pnpm run lint
+      - name: Run Typecheck
+        run: pnpm run typecheck
+      - name: Lint migrations (expand-contract guard)
+        run: pnpm -C apps/core run lint:migrations
 
-      - name: Cache pnpm modules
-        uses: actions/cache@v4
+  build:
+    name: Core
+    runs-on: ubuntu-latest
+    needs: quality
+    services:
+      postgres:
+        image: postgres:16-alpine
         env:
-          cache-name: cache-pnpm-modules
+          POSTGRES_USER: mx
+          POSTGRES_PASSWORD: mx
+          POSTGRES_DB: mx_core
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mx -d mx_core"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
         with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-      - name: Install Dependencies
-        run: |
-          pnpm i
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Node.js and pnpm
+        uses: ./.github/actions/setup-node
+        with:
+          node-version: '22.x'
 
       - name: Build project
         run: |
           pnpm run bundle
       - name: Test Bundle Server
+        env:
+          SNOWFLAKE_WORKER_ID: 1
+          PG_HOST: 127.0.0.1
+          PG_PORT: 5432
+          PG_USER: mx
+          PG_PASSWORD: mx
+          PG_DATABASE: mx_core
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+          JWT_SECRET: test-bundle-server-jwt-secret
+          MIGRATIONS_DIR: ${{ github.workspace }}/apps/core/src/database/migrations
         run: |
           bash scripts/workflow/test-server.sh
+
       - name: Zip Assets
         run: |
           sh apps/core/zip-asset.sh
-      - name: Create Release
-        id: create_release
-        uses: elgohr/Github-Release-Action@v5
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag: ${{ github.ref_name }}
-          title: ${{ github.ref_name }}
-      - run: npx changelogithub
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-      - name: Upload Release Asset
-        id: upload-release-asset
-        uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          url: ${{ steps.create_release.outputs.upload_url }}
-          files: release.zip
-  # deploy:
-  #   name: Deploy To Remote Server
-  #   runs-on: ubuntu-latest
-  #   needs: [build]
-  #   steps:
-  #     - uses: robinraju/release-downloader@v1.11
-  #       name: Download release
-  #       with:
-  #         tag: ${{ github.ref_name }}
-  #         fileName: 'release-linux.zip'
-  #     - name: copy file via ssh password
-  #       uses: appleboy/scp-action@v0.1.7
-  #       with:
-  #         host: ${{ secrets.HOST }}
-  #         username: ${{ secrets.USER }}
-  #         password: ${{ secrets.PASSWORD }}
-  #         # port: ${{ secrets.PORT }}
-  #         key: ${{ secrets.KEY }}
-  #         source: 'release-linux.zip'
-  #         target: '/tmp/mx-core'
+          mv release.zip release-linux.zip
 
-  #     - name: Exec deploy script with SSH
-  #       uses: appleboy/ssh-action@master
-  #       env:
-  #         JWTSECRET: ${{ secrets.JWTSECRET }}
-  #         MX_ENCRYPT_KEY: ${{ secrets.MX_ENCRYPT_KEY }}
-  #       with:
-  #         command_timeout: 5m
-  #         host: ${{ secrets.HOST }}
-  #         username: ${{ secrets.USER }}
-  #         password: ${{ secrets.PASSWORD }}
-  #         key: ${{ secrets.KEY }}
-  #         envs: JWTSECRET,MX_ENCRYPT_KEY
-  #         script_stop: true
-  #         script: |
-  #           whoami
-  #           cd
-  #           source ~/.zshrc
-  #           cd mx
-  #           ls -a
-  #           node server-deploy.js --jwtSecret=$JWTSECRET --encrypt_key=$MX_ENCRYPT_KEY --encrypt_enable --scp_path=/tmp/mx-core/release-linux.zip
+      - name: Verify release notes present
+        run: |
+          if [ ! -s apps/core/RELEASE_NOTES.md ]; then
+            echo "::error::apps/core/RELEASE_NOTES.md is missing or empty. The release-core skill must produce it before tagging."
+            exit 1
+          fi
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: apps/core/RELEASE_NOTES.md
+          prerelease: ${{ contains(fromJSON('["alpha", "beta"]'), github.ref_name) }}
+          files: release-linux.zip
+
 
   docker:
-    name: Docker Release
-    runs-on: ${{ matrix.os }}
+    name: Docker (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    needs: quality
     strategy:
       matrix:
-        os: [ubuntu-latest]
-        arch: ['amd64', 'arm64']
+        include:
+        - platform: linux/amd64
+          runner: ubuntu-latest
+        - platform: linux/arm64
+          runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      - name: Docker meta
+        uses: actions/checkout@v6
+
+      - name: Docker Setup QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
-          images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/mx-server
+          images: ${{ env.IMAGE }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Copy .env
+        run: |
+          cp .env.example .env
+
+      - name: Build and load
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Test
+        run: |
+          bash ./scripts/workflow/test-docker.sh
+          sudo rm -rf ./data
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          platforms: ${{ matrix.platform }}
+          context: .
+          tags: ${{ env.IMAGE }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Prepare
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+      
+  merge:
+    name: Merge
+    runs-on: ubuntu-latest
+    needs: docker
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Copy .env
-        run: |
-          cp .env.example .env
-      - name: Build and export to Docker
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }},${{ secrets.DOCKERHUB_USERNAME }}/mx-server:latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Test
-        run: |
-          bash ./scripts/workflow/test-docker.sh
-          sudo rm -rf ./data
+            type=raw,value=latest
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
-      - name: Build and push
-        id: docker_build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}

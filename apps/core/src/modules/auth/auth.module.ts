@@ -1,44 +1,50 @@
-import { merge } from 'lodash'
-
-import {
+import type {
   DynamicModule,
-  Inject,
   MiddlewareConsumer,
   NestModule,
+  Provider,
 } from '@nestjs/common'
 
-import { authConfig } from './auth.config'
-import { AuthConfigInjectKey } from './auth.constant'
+import { API_VERSION } from '~/app.config'
+
+import { AuthInstanceInjectKey } from './auth.constant'
 import { AuthController } from './auth.controller'
-import { ServerAuthConfig } from './auth.implement'
+import type { AuthInstance } from './auth.interface'
 import { AuthMiddleware } from './auth.middleware'
+import { AuthRepository } from './auth.repository'
 import { AuthService } from './auth.service'
+import { DeviceController } from './device.controller'
 
 export class AuthModule implements NestModule {
-  constructor(
-    @Inject(AuthConfigInjectKey) private readonly config: ServerAuthConfig,
-  ) {}
-  static forRoot(config?: ServerAuthConfig): DynamicModule {
-    const finalConfig = merge(authConfig, config)
-    const provider = {
-      provide: AuthConfigInjectKey,
-      useValue: finalConfig,
+  static forRoot(): DynamicModule {
+    let auth: AuthInstance
+
+    const authProvider: Provider = {
+      provide: AuthInstanceInjectKey,
+      useValue: {
+        get() {
+          return auth
+        },
+        set(value: AuthInstance) {
+          auth = value
+        },
+      },
     }
+
     return {
-      controllers: [AuthController],
-      exports: [AuthService, provider],
+      controllers: [AuthController, DeviceController],
+      exports: [AuthService, authProvider],
+      imports: [],
       module: AuthModule,
       global: true,
 
-      providers: [provider, AuthService],
+      providers: [AuthService, AuthRepository, authProvider],
     }
   }
 
   configure(consumer: MiddlewareConsumer) {
-    const config = this.config
+    const basePath = isDev ? '/auth' : `/api/v${API_VERSION}/auth`
 
-    consumer
-      .apply(AuthMiddleware)
-      .forRoutes(`${config.basePath || '/auth'}/(.*)`)
+    consumer.apply(AuthMiddleware).forRoutes(`${basePath}/*auth`)
   }
 }

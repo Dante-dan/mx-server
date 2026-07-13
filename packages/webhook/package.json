@@ -1,15 +1,34 @@
 {
   "name": "@mx-space/webhook",
-  "version": "0.5.0",
-  "devDependencies": {
-    "express": "4.21.0"
-  },
+  "version": "0.8.3",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "main": "dist/index.cjs",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.cts",
+  "exports": {
+    ".": {
+      "types": {
+        "require": "./dist/index.d.cts",
+        "import": "./dist/index.d.mts"
+      },
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.mjs"
+    },
+    "./dist/*": {
+      "require": "./dist/*.cjs",
+      "import": "./dist/*.mjs"
+    },
+    "./package.json": "./package.json"
+  },
   "scripts": {
-    "build": "node scripts/generate.js && tsup && node scripts/post-build.cjs"
+    "build": "bun scripts/extract-models.ts && node scripts/generate.js && tsdown"
+  },
+  "devDependencies": {
+    "express": "5.2.1",
+    "tsdown": "0.22.3"
   },
   "bump": {
     "before": [
@@ -23,16 +42,7 @@
     "tag": false,
     "commit_message": "chore(release): bump @mx-space/webhook to v${NEW_VERSION}"
   },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    },
-    "./dist/*": {
-      "import": "./dist/*.js",
-      "require": "./dist/*.cjs"
-    },
-    "./package.json": "./package.json"
+  "dependencies": {
+    "rebuild": "^0.1.2"
   }
 }

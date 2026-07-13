@@ -1,42 +1,64 @@
-import type { FastifyRequest } from 'fastify'
-
 import fastifyCookie from '@fastify/cookie'
 import FastifyMultipart from '@fastify/multipart'
 import { Logger } from '@nestjs/common'
 import { FastifyAdapter } from '@nestjs/platform-fastify'
+import type { FastifyRequest } from 'fastify'
 
 import { getIp } from '~/utils/ip.util'
 
+const logger = new Logger('Fastify')
+
+function logWarn(desc: string, req: FastifyRequest, _context: string) {
+  const ua = req.raw.headers['user-agent']
+  logger.warn(
+    // prettier-ignore
+    `${desc}\n` +
+      `Path: ${req.url}\n` +
+      `IP: ${getIp(req)}\n` +
+      `UA: ${ua}`,
+  )
+}
+
+// Trust model: the deployment sits behind exactly one reverse proxy hop
+// (Dokploy / Cloudflare). `trustProxy: true` would trust the entire
+// `X-Forwarded-For` chain and let a client spoof its IP by prepending a
+// segment. We instead trust a fixed number of hops (default 1 — the immediate
+// proxy) so Fastify's `request.ip` resolves to the proxy-attested client IP.
+// Override with TRUST_PROXY (an integer hop count, or a comma-separated list
+// of trusted proxy IPs/CIDRs) only if the deployment has more proxy layers.
+const resolveTrustProxy = (): number | string[] => {
+  const raw = process.env.TRUST_PROXY?.trim()
+  if (!raw) return 1
+  if (/^\d+$/.test(raw)) return Number.parseInt(raw, 10)
+  return raw.split(',').map((s) => s.trim())
+}
+
 const app: FastifyAdapter = new FastifyAdapter({
-  trustProxy: true,
+  trustProxy: resolveTrustProxy(),
   logger: false,
 })
 export { app as fastifyApp }
 
 app.register(FastifyMultipart, {
   limits: {
-    fieldNameSize: 100, // Max field name size
+    fieldNameSize: 100,
     files: 1,
-
-    fileSize: 1024 * 1024 * 6, // 限制的最大文件大小，后续在 service 层再次限制
+    fileSize: 1024 * 1024 * 6,
   },
 })
 
 app.getInstance().addHook('onRequest', (request, reply, done) => {
-  // set undefined origin
   const origin = request.headers.origin
   if (!origin) {
     request.headers.origin = request.headers.host
   }
-
-  // forbidden php
 
   const url = request.url
   const ua = request.raw.headers['user-agent']
   if (url.endsWith('.php')) {
     reply.raw.statusMessage =
       'Eh. PHP is not support on this machine. Yep, I also think PHP is bestest programming language. But for me it is beyond my reach.'
-    logWarn('PHP 是世界上最好的语言！！！！！', request, 'GodPHP')
+    logWarn('PHP is the best language in the world!!!!!', request, 'GodPHP')
 
     return reply.code(418).send()
   } else if (/\/(?:adminer|admin|wp-login|phpmyadmin|\.env)$/i.test(url)) {
@@ -44,7 +66,7 @@ app.getInstance().addHook('onRequest', (request, reply, done) => {
     reply.raw.statusMessage = 'Hey, What the fuck are you doing!'
     reply.raw.statusCode = isMxSpaceClient ? 666 : 200
     logWarn(
-      '注意了，有人正在搞渗透，让我看看是谁，是哪个小坏蛋这么不听话。\n',
+      'Heads up — someone is probing for vulnerabilities. Let me see which little troublemaker this is.\n',
       request,
       'Security',
     )
@@ -52,7 +74,6 @@ app.getInstance().addHook('onRequest', (request, reply, done) => {
     return reply.send('Check request header to find an egg.')
   }
 
-  // skip favicon request
   if (/favicon\.ico$/.test(url) || /manifest\.json$/.test(url)) {
     return reply.code(204).send()
   }
@@ -61,17 +82,5 @@ app.getInstance().addHook('onRequest', (request, reply, done) => {
 })
 
 app.register(fastifyCookie, {
-  secret: 'cookie-secret', // 这个 secret 不太重要，不存鉴权相关，无关紧要
+  secret: 'cookie-secret',
 })
-
-const logWarn = (desc: string, req: FastifyRequest, _context: string) => {
-  const ua = req.raw.headers['user-agent']
-  Logger.log(
-    // prettier-ignore
-    `${desc}\n` +
-      `Path: ${req.url}\n` +
-      `IP: ${getIp(req)}\n` +
-      `UA: ${ua}`,
-    'GodPHP',
-  )
-}

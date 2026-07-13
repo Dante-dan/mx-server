@@ -1,8 +1,7 @@
-import { JsonOutputFunctionsParser } from 'langchain/output_parsers'
-import type { FunctionDefinition } from '@langchain/core/language_models/base'
-
 import { Injectable, Logger } from '@nestjs/common'
 
+import { AI_FALLBACK_SLUG_MAX_LENGTH } from '../ai.constants'
+import { AI_PROMPTS } from '../ai.prompts'
 import { AiService } from '../ai.service'
 
 @Injectable()
@@ -12,62 +11,70 @@ export class AiWriterService {
     this.logger = new Logger(AiWriterService.name)
   }
 
-  async queryByFunctionSchema(
-    text: string,
-    parameters: FunctionDefinition['parameters'],
-  ) {
-    const functionSchema: FunctionDefinition = {
-      name: 'extractor',
-      description: 'Extracts fields from the input.',
-      parameters,
-    }
-    const model = await this.aiService.getOpenAiChain()
-    const parser = new JsonOutputFunctionsParser()
+  private generateFallbackSlug(text: string): string {
+    const slug = text
+      .toLowerCase()
+      .replaceAll(/[^\da-z]+/g, '-')
+      .replaceAll(/^-+|-+$/g, '')
+      .slice(0, AI_FALLBACK_SLUG_MAX_LENGTH)
 
-    const runnable = model
-      .bind({
-        functions: [functionSchema],
-        function_call: { name: 'extractor' },
-      })
-      .pipe(parser)
-    const result = await runnable.invoke([text])
-
-    return result
+    return slug || 'untitled'
   }
+
   async generateTitleAndSlugByOpenAI(text: string) {
-    return this.queryByFunctionSchema(text, {
-      type: 'object',
-      properties: {
-        title: {
-          type: 'string',
-          description:
-            'The title of the article generated from the input text, the natural language of the title should be the same as the natural language of the input text',
-        },
-        slug: {
-          type: 'string',
-          description:
-            'The slug is named after the text entered, and is in English and conforms to url specifications',
-        },
-        lang: {
-          type: 'string',
-          description: 'The natural language of the input text',
-        },
-      },
-      required: ['title', 'slug', 'lang'],
-    })
+    const runtime = await this.aiService.getWriterModel()
+
+    try {
+      // No TaskExecuteContext available on this synchronous admin call — cost
+      // capture intentionally omitted (call site is not task-queue driven).
+      const { output } = await runtime.generateStructured({
+        ...AI_PROMPTS.writer.titleAndSlug(text),
+        temperature: 0.3,
+        maxRetries: 2,
+      })
+
+      return output
+    } catch (error) {
+      this.logger.error(
+        `Failed to generate title and slug: ${error.message}`,
+        error.stack,
+      )
+
+      const fallbackTitle =
+        text.slice(0, AI_FALLBACK_SLUG_MAX_LENGTH).trim() +
+        (text.length > AI_FALLBACK_SLUG_MAX_LENGTH ? '...' : '')
+
+      return {
+        title: fallbackTitle,
+        slug: this.generateFallbackSlug(fallbackTitle),
+        lang: 'en',
+        keywords: [],
+      }
+    }
   }
 
   async generateSlugByTitleViaOpenAI(title: string) {
-    return this.queryByFunctionSchema(title, {
-      type: 'object',
-      properties: {
-        slug: {
-          type: 'string',
-          description:
-            'The slug is named after the text entered, and is in English and conforms to url specifications',
-        },
-      },
-      required: ['slug'],
-    })
+    const runtime = await this.aiService.getWriterModel()
+
+    try {
+      // No TaskExecuteContext available on this synchronous admin call — cost
+      // capture intentionally omitted (call site is not task-queue driven).
+      const { output } = await runtime.generateStructured({
+        ...AI_PROMPTS.writer.slug(title),
+        temperature: 0.3,
+        maxRetries: 2,
+      })
+
+      return output
+    } catch (error) {
+      this.logger.error(
+        `Failed to generate slug from title: ${error.message}`,
+        error.stack,
+      )
+
+      return {
+        slug: this.generateFallbackSlug(title),
+      }
+    }
   }
 }

@@ -1,0 +1,222 @@
+import { Injectable } from '@nestjs/common'
+
+import { AppErrorCode, createAppException } from '~/common/errors'
+import { FileReferenceType } from '~/modules/file/file-reference.enum'
+import { FileReferenceService } from '~/modules/file/file-reference.service'
+import { ContentFormat } from '~/shared/types/content-format.type'
+
+import { DraftRefType } from './draft.enum'
+import { DraftRepository } from './draft.repository'
+import type { CreateDraftDto, UpdateDraftDto } from './draft.schema'
+import type { DraftHistoryModel, DraftRow } from './draft.types'
+import { DraftHistoryService } from './draft-history.service'
+
+@Injectable()
+export class DraftService {
+  constructor(
+    private readonly draftRepository: DraftRepository,
+    private readonly fileReferenceService: FileReferenceService,
+    private readonly draftHistoryService: DraftHistoryService,
+  ) {}
+
+  get repository() {
+    return this.draftRepository
+  }
+
+  async list(page: number, size: number, filter: any = {}) {
+    return this.draftRepository.list(page, size, filter)
+  }
+
+  async count(filter: any = {}) {
+    return this.draftRepository.count(filter)
+  }
+
+  async create(dto: CreateDraftDto): Promise<DraftRow> {
+    if (dto.refId) {
+      const existing = await this.draftRepository.findByRef(
+        dto.refType as DraftRefType,
+        dto.refId,
+      )
+      if (existing) return this.update(existing.id, dto)
+    }
+
+    const draft = await this.draftRepository.create({
+      ...dto,
+      refType: dto.refType as DraftRefType,
+      contentFormat: dto.contentFormat ?? ContentFormat.Markdown,
+      typeSpecificData: dto.typeSpecificData,
+      meta: dto.meta,
+    })
+
+    if (draft.text) {
+      await this.fileReferenceService.updateReferencesForDocument(
+        draft,
+        draft.id,
+        FileReferenceType.Draft,
+      )
+    }
+
+    return draft
+  }
+
+  async update(id: string, dto: UpdateDraftDto): Promise<DraftRow> {
+    const draft = await this.draftRepository.findById(id)
+    if (!draft) throw createAppException(AppErrorCode.DRAFT_NOT_FOUND, { id })
+
+    const hasContentChange = this.draftHistoryService.hasContentChange(
+      {
+        title: draft.title,
+        text: draft.text,
+        content: draft.content ?? undefined,
+        contentFormat: draft.contentFormat as ContentFormat,
+        typeSpecificData: JSON.stringify(draft.typeSpecificData ?? undefined),
+      },
+      dto,
+    )
+
+    let history = draft.history
+    if (hasContentChange && (draft.title || draft.text || draft.content)) {
+      history = this.draftHistoryService.pushHistoryEntry(
+        {
+          version: draft.version,
+          title: draft.title,
+          text: draft.text,
+          contentFormat: draft.contentFormat as ContentFormat,
+          content: draft.content ?? undefined,
+          typeSpecificData: JSON.stringify(draft.typeSpecificData ?? undefined),
+          savedAt: draft.updatedAt || draft.createdAt || new Date(),
+        },
+        draft.history as any,
+      ).history as any
+    }
+
+    const updated = await this.draftRepository.update(id, {
+      ...dto,
+      contentFormat: dto.contentFormat,
+      typeSpecificData: dto.typeSpecificData,
+      meta: dto.meta,
+      version: hasContentChange ? draft.version + 1 : draft.version,
+      history,
+    })
+    if (!updated) throw createAppException(AppErrorCode.DRAFT_NOT_FOUND, { id })
+
+    if (dto.text !== undefined) {
+      await this.fileReferenceService.updateReferencesForDocument(
+        updated,
+        updated.id,
+        FileReferenceType.Draft,
+      )
+    }
+
+    return updated
+  }
+
+  async findById(id: string): Promise<DraftRow | null> {
+    return this.draftRepository.findById(id)
+  }
+
+  async findByRef(
+    refType: DraftRefType,
+    refId: string,
+  ): Promise<DraftRow | null> {
+    const draft = await this.draftRepository.findByRef(refType, refId)
+    if (!draft) return null
+    if (
+      draft.publishedVersion !== undefined &&
+      draft.publishedVersion === draft.version
+    ) {
+      return null
+    }
+    return draft
+  }
+
+  async findNewDrafts(refType: DraftRefType): Promise<DraftRow[]> {
+    const result = await this.draftRepository.list(1, 50, {
+      refType,
+      hasRef: false,
+    })
+    return result.data
+  }
+
+  async delete(id: string): Promise<void> {
+    const result = await this.draftRepository.deleteById(id)
+    if (!result) throw createAppException(AppErrorCode.DRAFT_NOT_FOUND, { id })
+    await this.fileReferenceService.removeReferencesForDocument(
+      id,
+      FileReferenceType.Draft,
+    )
+  }
+
+  async deleteByRef(refType: DraftRefType, refId: string): Promise<void> {
+    const draft = await this.draftRepository.findByRef(refType, refId)
+    if (!draft) return
+    await this.draftRepository.deleteById(draft.id)
+    await this.fileReferenceService.removeReferencesForDocument(
+      draft.id,
+      FileReferenceType.Draft,
+    )
+  }
+
+  async getHistory(id: string) {
+    const draft = await this.draftRepository.findById(id)
+    if (!draft) throw createAppException(AppErrorCode.DRAFT_NOT_FOUND, { id })
+    return this.draftHistoryService.getHistorySummary(draft.history as any)
+  }
+
+  private async resolveHistoryVersion(
+    id: string,
+    version: number,
+  ): Promise<{ draft: DraftRow; resolved: DraftHistoryModel }> {
+    const draft = await this.draftRepository.findById(id)
+    if (!draft) throw createAppException(AppErrorCode.DRAFT_NOT_FOUND, { id })
+    const historyEntry = draft.history.find((h) => h.version === version)
+    if (!historyEntry)
+      throw createAppException(AppErrorCode.DRAFT_HISTORY_NOT_FOUND)
+    const resolved = this.draftHistoryService.resolveHistoryEntry(
+      historyEntry as any,
+      draft.history as any,
+      draft.text ?? '',
+      draft.content ?? undefined,
+    )
+    return { draft, resolved }
+  }
+
+  async getHistoryVersion(
+    id: string,
+    version: number,
+  ): Promise<DraftHistoryModel> {
+    const { resolved } = await this.resolveHistoryVersion(id, version)
+    return resolved
+  }
+
+  async restoreVersion(id: string, version: number): Promise<DraftRow> {
+    const { resolved } = await this.resolveHistoryVersion(id, version)
+    return this.update(id, {
+      title: resolved.title,
+      text: resolved.text ?? '',
+      content: resolved.content,
+      contentFormat: resolved.contentFormat as ContentFormat,
+      typeSpecificData: resolved.typeSpecificData
+        ? JSON.safeParse(resolved.typeSpecificData)
+        : undefined,
+    } as UpdateDraftDto)
+  }
+
+  async linkToPublished(draftId: string, publishedId: string): Promise<void> {
+    const draft = await this.draftRepository.findById(draftId)
+    if (!draft) return
+    await this.draftRepository.linkToPublished(
+      draftId,
+      publishedId,
+      draft.refType,
+    )
+  }
+
+  async markAsPublished(draftId: string): Promise<void> {
+    const draft = await this.draftRepository.findById(draftId)
+    if (!draft) return
+    await this.draftRepository.update(draftId, {
+      publishedVersion: draft.version,
+    })
+  }
+}

@@ -1,43 +1,39 @@
-import { Transform } from 'class-transformer'
-import {
-  IsDate,
-  isMongoId,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-} from 'class-validator'
-
 import {
   Body,
   Delete,
   Get,
-  NotFoundException,
+  Inject,
   Patch,
   Post,
   Query,
   Req,
 } from '@nestjs/common'
 import { EventEmitter2 } from '@nestjs/event-emitter'
+import { omit } from 'es-toolkit/compat'
+import { createZodDto } from 'nestjs-zod'
+import { z } from 'zod'
 
 import { ApiController } from '~/common/decorators/api-controller.decorator'
 import { Auth } from '~/common/decorators/auth.decorator'
 import { HttpCache } from '~/common/decorators/cache.decorator'
+import { AppErrorCode, createAppException } from '~/common/errors'
 import { EventBusEvents } from '~/constants/event-bus.constant'
-import { MongoIdDto } from '~/shared/dto/id.dto'
-import { FastifyBizRequest } from '~/transformers/get-req.transformer'
+import { StringIdDto } from '~/shared/dto/id.dto'
+import type { FastifyBizRequest } from '~/transformers/get-req.transformer'
 
+import { AuthInstanceInjectKey } from './auth.constant'
+import type { InjectAuthInstance } from './auth.interface'
 import { AuthService } from './auth.service'
 
-export class TokenDto {
-  @IsDate()
-  @IsOptional()
-  @Transform(({ value: v }) => new Date(v))
-  expired?: Date
+const TokenSchema = z.object({
+  expired: z.preprocess(
+    (val) => (val ? new Date(val as string) : undefined),
+    z.date().optional(),
+  ),
+  name: z.string().min(1),
+})
 
-  @IsString()
-  @IsNotEmpty()
-  name: string
-}
+export class TokenDto extends createZodDto(TokenSchema) {}
 @ApiController({
   path: 'auth',
 })
@@ -45,6 +41,8 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly eventEmitter: EventEmitter2,
+    @Inject(AuthInstanceInjectKey)
+    private readonly authInstance: InjectAuthInstance,
   ) {}
 
   @Get('token')
@@ -54,11 +52,10 @@ export class AuthController {
     @Query('id') id?: string,
   ) {
     if (typeof token === 'string') {
-      return await this.authService
-        .verifyCustomToken(token)
-        .then(([isValid]) => isValid)
+      const [isValid] = await this.authService.verifyCustomToken(token)
+      return isValid
     }
-    if (id && typeof id === 'string' && isMongoId(id)) {
+    if (typeof id === 'string') {
       return await this.authService.getTokenSecret(id)
     }
     return await this.authService.getAllAccessToken()
@@ -67,34 +64,18 @@ export class AuthController {
   @Post('token')
   @Auth()
   async generateToken(@Body() body: TokenDto) {
-    const { expired, name } = body
-    const token = await this.authService.generateAccessToken()
-    const model = {
-      expired,
-      token,
-      name,
-    }
-    await this.authService.saveToken(model)
-    return model
+    return this.authService.createAccessToken(body)
   }
 
   @Delete('token')
   @Auth()
-  async deleteToken(@Query() query: MongoIdDto) {
+  async deleteToken(@Query() query: StringIdDto) {
     const { id } = query
-    const token = await this.authService
-      .getAllAccessToken()
-      .then((models) =>
-        models.find((model) => {
-          return (model as any).id === id
-        }),
-      )
-      .then((model) => {
-        return model?.token
-      })
+    const secret = await this.authService.getTokenSecret(id)
+    const token = secret?.token
 
     if (!token) {
-      throw new NotFoundException(`token ${id} is not found`)
+      throw createAppException(AppErrorCode.AUTH_TOKEN_NOT_FOUND)
     }
     await this.authService.deleteToken(id)
 
@@ -126,6 +107,17 @@ export class AuthController {
     return {
       ...session.user,
       ...account,
+      ...omit(session, ['session', 'user']),
+
+      id: session?.user?.id ?? session.providerAccountId,
     }
+  }
+
+  @Get('providers')
+  @HttpCache({
+    disable: true,
+  })
+  async getProviders() {
+    return this.authInstance.get().api.getProviders()
   }
 }

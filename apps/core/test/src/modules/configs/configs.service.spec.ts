@@ -1,141 +1,211 @@
-import { redisHelper } from 'test/helper/redis-mock.helper'
-import { vi } from 'vitest'
-import type { MockCacheService } from 'test/helper/redis-mock.helper'
-
-import { UnprocessableEntityException } from '@nestjs/common'
-import { Test } from '@nestjs/testing'
-import { getModelForClass } from '@typegoose/typegoose'
-
-import { ExtendedValidationPipe } from '~/common/pipes/validation.pipe'
 import { RedisKeys } from '~/constants/cache.constant'
-import { VALIDATION_PIPE_INJECTION } from '~/constants/system.constant'
-import { OptionModel } from '~/modules/configs/configs.model'
+import { AIProviderType } from '~/modules/ai/ai.types'
+import { generateDefaultConfig } from '~/modules/configs/configs.default'
 import { ConfigsService } from '~/modules/configs/configs.service'
-import { UserService } from '~/modules/user/user.service'
-import { EventManagerService } from '~/processors/helper/helper.event.service'
-import { CacheService } from '~/processors/redis/cache.service'
-import { SubPubBridgeService } from '~/processors/redis/subpub.service'
-import { getModelToken } from '~/transformers/model.transformer'
 import { getRedisKey } from '~/utils/redis.util'
 
-describe('Test ConfigsService', () => {
-  let service: ConfigsService
+const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-  let redisService: MockCacheService
-
-  const optionModel = getModelForClass(OptionModel)
-  const mockEmitFn = vi.fn()
-  beforeAll(async () => {
-    const { CacheService: redisService$ } = await redisHelper
-
-    redisService = redisService$
-
-    const moduleRef = await Test.createTestingModule({
-      imports: [],
-      providers: [
-        ConfigsService,
-        {
-          provide: getModelToken(OptionModel.name),
-          useValue: optionModel,
-        },
-        { provide: UserService, useValue: {} },
-        {
-          provide: CacheService,
-          useValue: redisService$,
-        },
-        { provide: EventManagerService, useValue: { emit: mockEmitFn } },
-        {
-          provide: SubPubBridgeService,
-          useValue: {},
-        },
-        {
-          provide: VALIDATION_PIPE_INJECTION,
-          useValue: ExtendedValidationPipe.shared,
-        },
-      ],
-    }).compile()
-
-    service = moduleRef.get<ConfigsService>(ConfigsService)
+function createDeferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((innerResolve) => {
+    resolve = innerResolve
   })
 
-  test('first get config should equal default config', async () => {
-    const config = await service.getConfig()
+  return { promise, resolve }
+}
 
-    expect(config).toBeDefined()
-    // use `toEqual` instead of `toStrictEqual` baseuse config is InstanceType of IConfig
-    expect(config).toEqual(service.defaultConfig)
+describe('ConfigsService', () => {
+  it('waits for redis before writing config cache during initialization', async () => {
+    const ready = createDeferred()
+    const redisClient = {
+      set: vi.fn().mockResolvedValue('OK'),
+    }
+    const redisService = {
+      getClient: vi.fn(() => redisClient),
+      waitForReady: vi.fn(() => ready.promise),
+    }
+    const optionsRepository = {
+      findAll: vi.fn().mockResolvedValue([]),
+    }
+
+    const service = new ConfigsService(
+      optionsRepository as any,
+      redisService as any,
+      {} as any,
+      { emit: vi.fn() } as any,
+    )
+    const initPromise = service.onModuleInit()
+
+    await flushPromises()
+
+    expect(redisService.waitForReady).toHaveBeenCalledTimes(1)
+    expect(redisClient.set).not.toHaveBeenCalled()
+
+    ready.resolve()
+    await expect(initPromise).resolves.toBeUndefined()
+
+    expect(redisClient.set).toHaveBeenCalledWith(
+      getRedisKey(RedisKeys.ConfigCache),
+      JSON.stringify(generateDefaultConfig()),
+    )
   })
 
-  describe('patch config should apply change between db and redis', () => {
-    it('should update config', async () => {
-      const updated = await service.patch('seo', {
-        keywords: ['foo', 'bar'],
-      })
-      expect(updated).toBeDefined()
-      expect(updated).toStrictEqual({
-        ...service.defaultConfig.seo,
-        keywords: ['foo', 'bar'],
-      })
-    })
+  it('waits for redis before reading config cache', async () => {
+    const initReady = Promise.resolve()
+    const readReady = createDeferred()
+    const redisClient = {
+      get: vi.fn().mockResolvedValue(JSON.stringify(generateDefaultConfig())),
+      set: vi.fn().mockResolvedValue('OK'),
+    }
+    const redisService = {
+      getClient: vi.fn(() => redisClient),
+      waitForReady: vi
+        .fn()
+        .mockImplementationOnce(() => initReady)
+        .mockImplementation(() => readReady.promise),
+    }
+    const optionsRepository = {
+      findAll: vi.fn().mockResolvedValue([]),
+    }
 
-    it('should update redis', async () => {
-      const redis = redisService.getClient()
-      const dataStr = await redis.get(getRedisKey(RedisKeys.ConfigCache))
-      const data = JSON.parse(dataStr)
-      expect(data).toBeDefined()
-      expect(data.seo.keywords).toStrictEqual(['foo', 'bar'])
-    })
+    const service = new ConfigsService(
+      optionsRepository as any,
+      redisService as any,
+      {} as any,
+      { emit: vi.fn() } as any,
+    )
 
-    it('should update db', async () => {
-      const seo = (await optionModel.findOne({ name: 'seo' })).value
-      expect(seo).toBeDefined()
-      expect(seo.keywords).toStrictEqual(['foo', 'bar'])
-    })
+    await flushPromises()
+    redisClient.get.mockClear()
 
-    it('should get updated config via `get()`', async () => {
-      const seo = await service.get('seo')
-      expect(seo).toBeDefined()
-      expect(seo.keywords).toStrictEqual(['foo', 'bar'])
-    })
+    const configPromise = service.getConfig()
+    await flushPromises()
+
+    expect(redisClient.get).not.toHaveBeenCalled()
+
+    readReady.resolve()
+    await expect(configPromise).resolves.toEqual(generateDefaultConfig())
+    expect(redisClient.get).toHaveBeenCalledWith(
+      getRedisKey(RedisKeys.ConfigCache),
+    )
   })
 
-  it('should throw error if set a wrong type of config value', async () => {
+  it('resolves AI providers from decrypted config cache', async () => {
+    const config = generateDefaultConfig()
+    config.ai.providers = [
+      {
+        id: 'custom-provider',
+        name: 'Custom Provider',
+        type: AIProviderType.OpenAICompatible,
+        apiKey: 'sk-decrypted',
+        endpoint: 'https://api.example.com/v1',
+        defaultModel: 'gpt-5.5',
+        enabled: true,
+      },
+    ]
+    const redisClient = {
+      get: vi.fn().mockResolvedValue(JSON.stringify(config)),
+      set: vi.fn().mockResolvedValue('OK'),
+    }
+    const redisService = {
+      getClient: vi.fn(() => redisClient),
+      waitForReady: vi.fn().mockResolvedValue(undefined),
+    }
+    const optionsRepository = {
+      findAll: vi.fn().mockResolvedValue([
+        {
+          name: 'ai',
+          value: {
+            providers: [
+              {
+                ...config.ai.providers[0],
+                apiKey: '$${mx}$$encrypted',
+              },
+            ],
+          },
+        },
+      ]),
+      get: vi.fn(),
+    }
+
+    const service = new ConfigsService(
+      optionsRepository as any,
+      redisService as any,
+      {} as any,
+      { emit: vi.fn() } as any,
+    )
+
     await expect(
-      service.patchAndValid('seo', { title: true } as any),
-    ).rejects.toThrow(UnprocessableEntityException)
+      service.getAiProviderById('custom-provider'),
+    ).resolves.toMatchObject({
+      id: 'custom-provider',
+      apiKey: 'sk-decrypted',
+    })
+    expect(optionsRepository.get).not.toHaveBeenCalled()
   })
 
-  it('should emit event if enable email option and update search', async () => {
-    // + 1 call time because of `config.changed` event
-    await service.patchAndValid('mailOptions', { enable: true })
+  describe('seo.i18n patch semantics', () => {
+    function createService(
+      currentConfig: ReturnType<typeof generateDefaultConfig>,
+    ) {
+      const redisClient = {
+        get: vi.fn().mockResolvedValue(JSON.stringify(currentConfig)),
+        set: vi.fn().mockResolvedValue('OK'),
+      }
+      const redisService = {
+        getClient: vi.fn(() => redisClient),
+        waitForReady: vi.fn().mockResolvedValue(undefined),
+      }
+      const optionsRepository = {
+        findAll: vi.fn().mockResolvedValue([]),
+        upsert: vi.fn(async (name: string, value: unknown) => ({
+          id: '1' as any,
+          name,
+          value,
+        })),
+      }
+      const eventManager = { emit: vi.fn() }
 
-    expect(mockEmitFn).toBeCalledTimes(3)
-    mockEmitFn.mockClear()
+      const service = new ConfigsService(
+        optionsRepository as any,
+        redisService as any,
+        {} as any,
+        eventManager as any,
+      )
 
-    await service.patchAndValid('mailOptions', { pass: '*' })
-    expect(mockEmitFn).toBeCalledTimes(2)
-    mockEmitFn.mockClear()
+      return { service, redisClient, optionsRepository, eventManager }
+    }
 
-    await service.patchAndValid('mailOptions', { pass: '*', enable: false })
-    expect(mockEmitFn).toBeCalledTimes(1)
-    mockEmitFn.mockClear()
+    it('replaces stored seo.i18n wholesale, dropping locale keys absent from the patch', async () => {
+      const currentConfig = generateDefaultConfig()
+      currentConfig.seo.i18n = {
+        zh: { title: 'zh title', description: 'zh desc' },
+        en: { title: 'en title' },
+      }
+      const { service } = createService(currentConfig)
 
-    await service.patchAndValid('algoliaSearchOptions', {
-      enable: true,
+      const result = await service.patchAndValid('seo', {
+        i18n: { en: { title: 'new en title' } },
+      })
+
+      expect(result.i18n).toEqual({ en: { title: 'new en title' } })
     })
-    expect(mockEmitFn).toBeCalledTimes(2)
-    mockEmitFn.mockClear()
 
-    await service.patchAndValid('algoliaSearchOptions', {
-      indexName: 'x',
-    })
-    expect(mockEmitFn).toBeCalledTimes(2)
-    mockEmitFn.mockClear()
+    it('leaves stored seo.i18n untouched when patching seo without i18n', async () => {
+      const currentConfig = generateDefaultConfig()
+      currentConfig.seo.i18n = {
+        zh: { title: 'zh title', description: 'zh desc' },
+        en: { title: 'en title' },
+      }
+      const { service } = createService(currentConfig)
 
-    await service.patchAndValid('algoliaSearchOptions', {
-      enable: false,
+      const result = await service.patchAndValid('seo', {
+        title: 'Updated title',
+      })
+
+      expect(result.title).toBe('Updated title')
+      expect(result.i18n).toEqual(currentConfig.seo.i18n)
     })
-    expect(mockEmitFn).toBeCalledTimes(1)
-    mockEmitFn.mockClear()
   })
 })

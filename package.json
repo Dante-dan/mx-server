@@ -1,6 +1,9 @@
 {
   "private": true,
-  "packageManager": "pnpm@9.12.1",
+  "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": ">=22"
+  },
   "license": "AGPLv3",
   "homepage": "https://github.com/mx-space/core#readme",
   "repository": {
@@ -9,44 +12,58 @@
   },
   "author": "Innei <https://innei.in>",
   "scripts": {
-    "format": "prettier --write \"apps/**/*.ts\" \"test/**/*.ts\" \"packages/**/*.ts\"",
-    "prepare": "husky install && node scripts/init-project.mjs && corepack enable",
-    "build:external": "pnpm -C \"packages/complied\" run build",
-    "build": "pnpm run build:external && pnpm -C \"apps/core\" run build",
-    "dev": "pnpm run build:external && pnpm -C \"apps/core\" run start",
-    "bundle": "pnpm run build:external && pnpm -C \"apps/core\" run bundle",
-    "test": "pnpm run build:external && pnpm -C \"apps/core\" run test",
+    "check:ai-translation-hash": "pnpm -C apps/core exec tsx scripts/check-ai-translation-hash.ts",
+    "check:controller-response-envelope": "pnpm -C apps/core exec tsx ../../scripts/check-controller-response-envelope.ts",
+    "check:validate-false-paired": "pnpm -C apps/core exec tsx ../../scripts/check-validate-false-paired-with-check.ts",
+    "format": "prettier --write \"apps/**/*.ts\"",
+    "lexical-live": "pnpm -C apps/core exec node scripts/lexical-translation-live.mjs",
+    "prepare": "simple-git-hooks",
+    "build": "pnpm -C \"apps/core\" run build",
+    "dev": "pnpm -C \"apps/core\" run dev",
+    "bundle": "pnpm -C \"apps/core\" run bundle",
+    "e2e": "pnpm -C \"packages/e2e\" run test",
+    "test": "pnpm -C \"apps/core\" run test",
     "lint": "pnpm -C \"apps/core\" run lint",
-    "publish:core": "cd apps/core && npm run publish"
-  },
-  "optionalDependencies": {
-    "mongodb-memory-server": "10.0.1",
-    "redis-memory-server": "0.11.0"
-  },
-  "dependencies": {
-    "zx-cjs": "7.0.7-0"
+    "typecheck": "pnpm check:controller-response-envelope && pnpm check:validate-false-paired && pnpm -C \"apps/core\" run typecheck",
+    "publish:core": "cd apps/core && npm run publish",
+    "dev:admin": "pnpm -C apps/admin run dev",
+    "build:admin": "pnpm -C apps/admin run build",
+    "typecheck:admin": "pnpm -C apps/admin run typecheck",
+    "lint:admin": "pnpm -C apps/admin run lint"
   },
   "devDependencies": {
-    "@innei/prettier": "0.15.0",
-    "@sxzz/eslint-config": "4.4.0",
-    "@types/node": "22.7.4",
-    "cross-env": "7.0.3",
-    "eslint": "^9.11.0",
-    "eslint-plugin-unused-imports": "4.1.4",
-    "husky": "9.1.6",
-    "lint-staged": "15.2.10",
-    "prettier": "3.3.3",
-    "rimraf": "6.0.1",
+    "@ianvs/prettier-plugin-sort-imports": "4.7.1",
+    "@lobehub/eslint-config": "^2.1.5",
+    "@mx-space/cli": "workspace:*",
+    "@types/node": "26.0.1",
+    "cross-env": "10.1.0",
+    "eslint": "^10.6.0",
+    "lint-staged": "17.0.8",
+    "prettier": "3.9.4",
+    "prettier-package-json": "2.8.0",
+    "prettier-plugin-ember-template-tag": "2.1.7",
+    "redis-memory-server": "0.17.0",
+    "rimraf": "6.1.3",
+    "rolldown": "1.1.4",
+    "simple-git-hooks": "2.13.1",
     "ts-node": "10.9.2",
     "tsconfig-paths": "4.2.0",
-    "tsup": "8.3.0",
-    "typescript": "5.6.2",
-    "vite-tsconfig-paths": "5.0.1"
+    "typescript": "6.0.3",
+    "vite-tsconfig-paths": "6.1.1"
   },
-  "husky": {
-    "hooks": {
-      "pre-commit": "lint-staged"
-    }
+  "resolutions": {
+    "eslint-plugin-react-compiler>zod": "3.25.76",
+    "get-pixels@^3>request": "./external/request",
+    "pino": "./external/pino",
+    "rolldown": "1.1.4",
+    "semver": "7.8.5",
+    "typescript": "6.0.3",
+    "undici": "^7.28.0",
+    "whatwg-url": "16.0.1",
+    "zod": "4.4.3"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm lint-staged"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx}": [
@@ -54,13 +71,5 @@
       "prettier --ignore-path ./.prettierignore --write "
     ]
   },
-  "issues": "https://github.com/mx-space/core/issues",
-  "resolutions": {
-    "get-pixels@^3>request": "./external/request",
-    "mongodb": "6.9.0",
-    "pino": "./external/pino",
-    "semver": "7.6.3",
-    "typescript": "5.6.2",
-    "whatwg-url": "14.0.0"
-  }
+  "issues": "https://github.com/mx-space/core/issues"
 }

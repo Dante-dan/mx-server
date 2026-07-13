@@ -1,8 +1,7 @@
-import axios from 'axios'
 import type { IRequestAdapter } from '~/interfaces/adapter'
+import axios from 'axios'
 import type { AxiosInstance, AxiosResponse } from 'axios'
 
-// eslint-disable-next-line spaced-comment
 const $http = /*#__PURE__*/ axios.create({})
 
 // ignore axios `method` declare not assignable to `Method`

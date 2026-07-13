@@ -1,4 +1,4 @@
-# Mix Space Server
+# MX Space Core
 
 [![GitHub stars](https://img.shields.io/github/stars/mx-space/mx-server.svg?style=flat)](https://github.com/mx-space/mx-server/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues-raw/mx-space/mx-server.svg?style=flat)](https://github.com/mx-space/mx-server/issues)
@@ -8,189 +8,194 @@
 [![wakatime](https://wakatime.com/badge/user/9213dc96-df0d-4e66-b0bb-50f9e04e988c/project/8afd37d1-7501-426f-824b-50aeeb96bb6f.svg)](https://wakatime.com/badge/user/9213dc96-df0d-4e66-b0bb-50f9e04e988c/project/8afd37d1-7501-426f-824b-50aeeb96bb6f)
 [![Docker Image Size (latest by date)](https://img.shields.io/docker/image-size/innei/mx-server)](https://hub.docker.com/repository/docker/innei/mx-server)
 
-> **Mix Space 核心服务；基于 [`nestjs`](https://github.com/nestjs/nest) (nodejs)，需安装 [`mongoDB`](https://www.mongodb.com/) 和 [`Redis`](https://redis.io/) 方可完整运行。**
+> **MX Space Core** — AI-powered headless CMS built on [`NestJS`](https://github.com/nestjs/nest) (Node.js). Requires [`PostgreSQL 16+`](https://www.postgresql.org/) and [`Redis`](https://redis.io/) to run.
 
-> v3 还是使用 [`nestjs`](https://github.com/nestjs/nest) 进行重构，之前的版本在 [此仓库](https://github.com/mx-space/server)。
+This project ships only the API. Pair it with one of the following frontends:
 
-此项目不带主站，可以使用以下项目（选一）进行部署。
+- [Yohaku](https://github.com/Innei/Yohaku) (Next.js, recommended)
+- [Shiro](https://github.com/innei/shiro) (minimalist)
+- [Kami](https://github.com/mx-space/kami) (anime-flavored, legacy)
 
-- [Shiro](https://github.com/innei/shiro) (纯净)
-- [Kami](https://github.com/mx-space/kami) (老二次元的风格)
-- [Yun](https://github.com/mx-space/mx-web-yun) (简洁的风格)
+Notable built-in modules:
 
-现有的比较有意思的一些小玩意的实现：
+- [Serverless functions](./src/modules/serverless/serverless.readme.md)
 
-- [云函数](./src/modules/serverless/serverless.readme.md)
+Third-party integrations:
 
-三方服务集成：
+- Bark push notifications
+- Email subscriptions
 
-- Bark 推送
-- 邮件订阅
-
-## Docker 部署（建议）
+## Docker Deployment (recommended)
 
 ```bash
-cd
-mkdir -p mx/server
-cd mx/server
-wget https://fastly.jsdelivr.net/gh/mx-space/mx-server@master/docker-compose.yml
-docker-compose up -d
+git clone https://github.com/mx-space/core.git mx-core
+cd mx-core
+cp docker-compose.server.yml docker-compose.prod.yml
+# Edit docker-compose.prod.yml — set JWT_SECRET, ALLOWED_ORIGINS, etc.
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-## 宿主部署
+Or pull the prebuilt image directly:
 
-需要以下环境：
+```bash
+docker pull innei/mx-server:latest
+```
 
-- Node.js 20+
-- MongoDB
-- Redis
+The image supports `linux/amd64` and `linux/arm64`.
 
-现有 macOS(x86)、Linux(x86) 的已构建产物。使用以下脚本可免手动构建直接运行。
+## Bare-metal Deployment
 
-```sh
-curl https://cdn.jsdelivr.net/gh/mx-space/mx-server@master/scripts/download-latest-asset.js >> download.js
-zx ./download.js
-cd mx-server
+Requirements:
+
+- Node.js 22+
+- PostgreSQL 16+
+- Redis 7.x
+
+Download the release bundle from [GitHub Releases](https://github.com/mx-space/core/releases/latest), extract it, then run:
+
+```
 node index.js
 ```
 
-或者手动下载 [release](https://github.com/mx-space/mx-server/releases/latest)，之后解压然后
-
-```
-node index.js
-```
-
-所有的依赖都打包进了产物，无需黑洞一般的 node_modules
+All dependencies are bundled into the artifact — no `node_modules` required.
 
 > [!NOTE]
-> 编译之后的产物错误堆栈是被压缩过的，如果你遇到任何问题，请使用 `node index.debug.js` 启动，复现问题并提供完整堆栈，然后提交 issue。
+> Stack traces in the bundled artifact are minified. If you hit an issue, start with `node index.debug.js`, reproduce the problem, capture the full stack trace, and file an issue.
 
-## 开发环境
+## Development
 
-```
+```bash
+corepack enable  # enable pnpm
 git clone https://github.com/mx-space/core mx-core
 cd mx-core
 pnpm i
+docker compose up -d postgres redis  # start PostgreSQL + Redis
 pnpm dev
 ```
 
-## 项目结构
+In development the API listens on `http://localhost:2333` with no `/api/v2` prefix.
+
+## Database Migrations (release-phase)
+
+Schema migrations do **not** run on app startup. They are a one-shot release-phase step. mx-core boots only after **verifying** the schema is at the expected version — otherwise it fails fast and refuses to start.
+
+Design document: [docs/superpowers/specs/2026-05-05-database-migration-release-phase-design.md](../../docs/superpowers/specs/2026-05-05-database-migration-release-phase-design.md)
+
+### Local Development
+
+`pnpm dev` runs `pnpm migrate` automatically via the `predev` hook — no manual step required. To run it explicitly:
+
+```bash
+pnpm -C apps/core run migrate          # apply pending migrations
+pnpm -C apps/core run lint:migrations  # audit new migrations for safety
+```
+
+After adding or modifying schema files:
+
+```bash
+pnpm -C apps/core exec drizzle-kit generate   # generate the SQL migration
+pnpm -C apps/core run lint:migrations         # same check CI runs
+```
+
+`lint:migrations` enforces expand-contract semantics so that an old pod is never broken by a new schema during a rolling deploy. To bypass a rule, add `-- migration-lint:allow=<rule> reason=<why>` — the reason is mandatory.
+
+### Docker / Production
+
+Both `docker-compose.yml` and `docker-compose.server.yml` include a one-shot `mx-migrate` service. `docker compose up` runs it first; `mx-core` only starts after `mx-migrate` exits with code 0. No manual step is needed.
+
+For multi-replica rolling deploys, the orchestrator (Dokploy / Kubernetes) handles ordering. The compose-level `service_completed_successfully` guard ensures migrations complete before any `mx-core` instance starts.
+
+### Authoring Schema Changes
+
+Before writing a migration, read the Claude skill at `.claude/skills/mx-migration-author/SKILL.md` — it contains an expand-contract decision tree and multi-release templates for common operations.
+
+## Project Layout
 
 ```
 .
-├── app.config.ts                 # 主程序配置，数据库、程序、第三方，一切可配置项
-├── app.controller.ts             # 主程序根控制器
-├── app.module.ts                 # 主程序根模块，负责各业务模块的聚合
-├── common                        # 存放中间件
-│   ├── adapters                  # Fastify 适配器的配置
-│   ├── decorator                 # 业务装饰器
-│   ├── exceptions                # 自定义异常
-│   ├── filters                   # 异常处理器
-│   ├── guard                     # 守卫与鉴权
-│   ├── interceptors              # 拦截器, 数据过滤与响应格式化处理
-│   ├── middlewares               # 传统意义上的中间件
-│   └── pipes                     # 管道
-├── constants                     # 常量
-├── main.ts                       # 引入配置，启动主程序，引入各种全局服务
-├── modules                       # 业务逻辑模块
-├── processors                      # 核心辅助模块
-│   ├── cache                       # Redis 缓存相关
-│   ├── database                    # Mongo 数据库相关
-│   ├── gateway                     # WebSocket 相关
-│   ├── helper                      # 辅助类
-│   └── logger                      # 自定义 Logger
-├── shared                          # 通用模型
-│   ├── dto                         # 数据验证模型
-│   ├── interface                   # 接口
-│   └── model                       # 基本数据模型
-├── utils                           # 工具类
-└── zx.global.ts
-
+├── common/                        # middleware, decorators, guards, interceptors, pipes, filters
+├── constants/                     # constants (business events, cache keys, error codes)
+├── database/                      # database layer
+│   ├── schema/                    #   Drizzle table definitions
+│   ├── migrations/                #   Drizzle SQL migrations (release-phase)
+│   └── app-migrations/            #   application-layer one-shot data fixups
+├── modules/                       # 45 business modules (ai, auth, post, note, comment …)
+├── processors/                    # infrastructure services
+│   ├── database/                  #   PG connection + repository registry + BaseRepository
+│   ├── redis/                     #   cache / pub-sub / emitter
+│   ├── gateway/                   #   WebSocket (admin, web, shared)
+│   ├── task-queue/                #   distributed task queue (Redis + Lua)
+│   └── helper/                    #   Email, Image, JWT, Lexical …
+├── shared/                        # shared DTOs, interfaces, Zod schemas
+├── transformers/                  # response transformers (snake_case, pagination)
+└── utils/                         # utility modules
 ```
 
-## 应用结构
+> The historical MongoDB → PostgreSQL data migration has been extracted into a dedicated CLI: [`packages/mongo-pg-cli`](../../packages/mongo-pg-cli).
 
-- 请求处理流程
+## Application Flow
 
-  1. request：收到请求
-  1. middleware：中间件过滤爬虫 PHP 肉鸡扫描路径，记录访问历史
-  1. guard：守卫过滤（鉴权）和角色附加
-  1. interceptor:before：只用于 DEBUG 请求计时
-  1. pipe：校验请求数据，过滤未知数据，非法类型抛错 422
-  1. controller & resolver：业务控制器
-  1. service：业务服务
-  1. interceptor:after：数据流拦截器（格式化数据）、请求缓存
-  1. filter：捕获以上所有流程中出现的异常，如果任何一个环节抛出异常，则返回错误
+- **Request pipeline**
+  1. `request` — incoming request received
+  1. `middleware` — filters scanner/bot probes (PHP exploits, etc.) and records visit history
+  1. `guard` — authentication + role enrichment
+  1. `interceptor:before` — DEBUG-only request timing
+  1. `pipe` — request validation; rejects unknown fields and invalid types with HTTP 422
+  1. `controller` & `resolver` — business controllers
+  1. `service` — business services
+  1. `interceptor:after` — response formatting + request-level caching
+  1. `filter` — captures any exception thrown above and returns the error response
 
-- 拦截器流向
+- **Interceptor order**
 
 ```
 ResponseInterceptor -> ResponseFilterInterceptor -> JSONTransformInterceptor -> CountingInterceptor -> AnalyzeInterceptor -> HttpCacheInterceptor
 ```
 
-- [业务逻辑模块](https://github.com/mx-space/mx-server/tree/master/src/modules)
+### Business Modules (`modules/`)
 
-  1. [Aggregate] 聚合
-  1. [Analyze] 数据统计
-  1. [Auth] 认证
-  1. [Backup] 备份
-  1. [Category] 分类
-  1. [Commnet] 评论
-  1. [Configs] 读取配置项
-  1. [Feed] RSS
-  1. [Health] 应用健康检查与日志相关
-  1. [Init] 初始化相关
-  1. [Link] 友链
-  1. [Markdown] Markdown 解析导入导出解析相关
-  1. [Note] 日记
-  1. [Option] 设置
-  1. [Page] 独立页面
-  1. [PageProxy] 反代管理页
-  1. [Post] 博文
-  1. [Project] 项目
-  1. [Recently] 最近
-  1. [Say] 说说
-  1. [Search] 搜索
-  1. [Sitemap] 站点地图
-  1. [User] 用户
+Ack · Activity · Aggregate · AI (summary / translation / insights / writer / agent / moderation) · Analyze · Auth (Better Auth) · Backup · Category · Comment · Configs · Cron-task · Debug · Dependency · Draft · Enrichment · Feed · File · Health · Helper · Init · Link · Markdown · Meta-preset · Note · Option · Owner · Page · Pageproxy · Poll · Post · Project · Reader · Recently · Render · Say · Search · Server-time · Serverless · Sitemap · Slug-tracker · Snippet · Subscribe · Topic · Update · Webhook
 
-- [核心辅助模块 processors](https://github.com/mx-space/mx-server/tree/master/src/processors)
-  1. [cache] Redis 缓存相关
-  1. [database] 数据库相关
-  1. [gateway] Socket.IO 相关
-     - 用户端
-     - 管理端
-     - 实时通知
-  1. [helper] 辅助类
-  1. [CountingService] 提供更新阅读计数
-  1. [CronService] 维护管理计划任务
-     - 自动备份
-     - 推送百度搜索
-     - 清除缓存
-     - etc.
-  1. [EmailService] 送信服务
-  1. [HttpService] 请求模块
-  1. [ImageService] 图片处理
-  1. [TqService] 任务队列
-  1. [UploadService] 上传服务
-  1. [AssetService] 获取本地资源服务
-  1. [TextMacroService] 文本宏替换服务
-  1. [JWTService] JWT 服务
-  1. [BarkPushService] Bark Push 服务
+### Infrastructure (`processors/`)
 
-## 开发
+| Service    | Responsibility |
+|------------|----------------|
+| database   | PostgreSQL connection + Drizzle ORM + repository registry |
+| redis      | cache / pub-sub / emitter |
+| gateway    | Socket.IO (web, admin, shared namespaces) |
+| task-queue | distributed task queue backed by Redis + Lua |
+| helper     | Email · Image · JWT · Lexical · URL Builder · BarkPush · TqService |
 
-```
+## Quick Dev Loop
+
+```bash
 pnpm i
-pnpm start
+docker compose up -d postgres redis
+pnpm dev
 ```
 
-## Reference
+## Tech Stack
 
-项目参考了 [nodepress](https://github.com/surmon-china/nodepress)
+| Component  | Technology                                |
+|------------|-------------------------------------------|
+| Runtime    | Node.js >= 22 + TypeScript 5.9            |
+| Framework  | NestJS 11 + Fastify                       |
+| Database   | PostgreSQL 16 (Drizzle ORM)               |
+| Cache      | Redis (ioredis)                           |
+| Validation | Zod 4 (nestjs-zod)                        |
+| WebSocket  | Socket.IO + Redis Emitter                 |
+| AI         | OpenAI SDK, Anthropic SDK                 |
+| Editor     | Lexical (`@haklex/rich-headless`)         |
+| Auth       | Better Auth (session, passkey, API key)   |
+| Testing    | Vitest + PostgreSQL testcontainers        |
+| ID         | Snowflake bigint (serialized as string)   |
+
+## Credits
+
+Inspired in part by [nodepress](https://github.com/surmon-china/nodepress).
 
 ---
 
 Since 2021-08-31
 
-Thanks
+Thanks.

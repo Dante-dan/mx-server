@@ -1,4 +1,4 @@
-import type { ImageModel } from '~/shared/model/image.model'
+import type { ImageModel } from '~/shared/types/legacy-model.type'
 
 export interface RSSProps {
   title: string
@@ -13,5 +13,7 @@ export interface RSSProps {
     text: string
     id: string
     images: ImageModel[]
+    contentFormat?: string
+    content?: string
   }[]
 }
